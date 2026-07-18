@@ -1,0 +1,99 @@
+import streamlit as st
+import google.generativeai as genai
+import json
+import io
+import os
+from docxtpl import DocxTemplate
+
+# Configura l'aspetto della pagina web
+st.set_page_config(page_title="Generatore DDT", layout="centered")
+
+st.title("📄 Generatore Automatico DDT")
+st.write("Carica il PDF del cliente per generare in automatico il documento Word compilato.")
+
+# Chiedi la API Key in modo sicuro
+api_key = st.text_input("Inserisci la tua API Key di Google Gemini:", type="password")
+
+# Interfaccia di caricamento file
+pdf_file = st.file_uploader("Carica il PDF con i dati da estrarre", type=["pdf"])
+
+# Pulsante di avvio
+if st.button("🚀 Genera Documento Word"):
+    if not api_key:
+        st.warning("Per favore, inserisci la tua API Key per continuare.")
+    elif not pdf_file:
+        st.warning("Per favore, carica un file PDF.")
+    else:
+        with st.spinner("Estrazione dati in corso con l'Intelligenza Artificiale..."):
+            try:
+                # 1. Configura Gemini
+                genai.configure(api_key=api_key)
+                
+                # 2. Salva temporaneamente il PDF per darlo in pasto a Gemini
+                with open("temp_upload.pdf", "wb") as f:
+                    f.write(pdf_file.getbuffer())
+                
+                pdf_upload = genai.upload_file("temp_upload.pdf")
+                
+                # 3. Prompt di estrazione 
+                prompt = """
+                Analizza questo documento e restituisci i dati ESCLUSIVAMENTE in formato JSON.
+                Il JSON deve avere questa struttura esatta, usando ESATTAMENTE questi nomi per le chiavi:
+                {
+                  "cedente": "dati di chi spedisce (ragione sociale, p.iva, ecc)",
+                  "num_ddt": "numero del documento",
+                  "data_ddt": "data del documento",
+                  "cessionario_1": "dati del cessionario I / destinatario principale",
+                  "cessionario_2": "dati del cessionario II / luogo di destinazione (se presente, altrimenti stringa vuota)",
+                  "aspetto": "aspetto esteriore dei beni (es. cartoni, scatole)",
+                  "tot_colli": "numero totale dei colli",
+                  "peso_tot": "peso totale in kg",
+                  "articoli": [
+                    {"qta": "valore quantità", "colli": "valore colli", "desc": "descrizione articolo"}
+                  ]
+                }
+                Se un dato non è presente nel PDF originale, inserisci una stringa vuota "".
+                """
+                
+                model = genai.GenerativeModel('gemini-flash-latest')
+                response = model.generate_content(
+                    [pdf_upload, prompt],
+                    generation_config={"response_mime_type": "application/json"}
+                )
+                
+                dati_estratti = json.loads(response.text)
+                
+                # 4. Compila il file Word
+                doc = DocxTemplate("File campione.docx")
+                doc.render(dati_estratti)
+                
+                # Compila la tabella numero 3 (la quarta del documento)
+                tabella = doc.tables[3]
+                articoli = dati_estratti.get('articoli', [])
+                
+                for item in articoli:
+                    nuova_riga = tabella.add_row().cells
+                    nuova_riga[0].text = str(item.get('qta', ''))
+                    nuova_riga[1].text = str(item.get('colli', ''))
+                    nuova_riga[2].text = str(item.get('desc', ''))
+                
+                # 5. Salva in memoria per il download
+                buffer = io.BytesIO()
+                doc.save(buffer)
+                buffer.seek(0)
+                
+                # Pulizia del file temporaneo
+                os.remove("temp_upload.pdf")
+                
+                st.success("✅ Documento generato con successo!")
+                
+                # Pulsante per scaricare il file finito
+                st.download_button(
+                    label="⬇️ Scarica il DDT Compilato",
+                    data=buffer,
+                    file_name="DDT_Compilato_Automatico.docx",
+                    mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+                )
+                
+            except Exception as e:
+                st.error(f"Si è verificato un errore durante l'elaborazione: {e}")
